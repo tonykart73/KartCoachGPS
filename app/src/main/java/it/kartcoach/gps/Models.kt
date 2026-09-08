@@ -37,7 +37,7 @@ data class LapData(
 enum class CueType(val label: String) {
     BRAKE("FRENA"),
     TURN("INSERISCI"),
-    STRAIGHTEN("RADDRIZZA"),
+    STRAIGHTEN("APRI"),
     THROTTLE("GAS"),
     FULL_THROTTLE("TUTTO GAS")
 }
