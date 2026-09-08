@@ -1,0 +1,10 @@
+{
+  "profileId": "morcone",
+  "name": "Pista di Morcone",
+  "nominalLengthM": 800.0,
+  "recognition": "geofence + conferma prima volta",
+  "startFinish": null,
+  "startFinishRadiusM": 10.0,
+  "markers": [],
+  "note": "La linea virtuale e i marker vengono appresi dalla sessione reale sul posto."
+}

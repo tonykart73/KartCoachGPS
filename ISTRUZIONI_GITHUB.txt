@@ -1,0 +1,14 @@
+KARTCOACH GPS - BUILD APK CON GITHUB (senza Android Studio)
+
+1) Apri il repository KartCoachGPS su GitHub.
+2) Clicca Add file > Upload files.
+3) Trascina TUTTA questa cartella KartCoachGPS nella pagina di upload.
+   GitHub supporta il drag-and-drop di una cartella.
+4) In fondo premi Commit changes.
+5) Apri la scheda Actions del repository.
+6) Apri "Build KartCoach APK".
+7) Quando il pallino diventa verde, apri il run completato.
+8) In fondo, sezione Artifacts, scarica "KartCoach-APK".
+9) Il file scaricato è uno ZIP; dentro trovi KartCoach.apk.
+
+Se GitHub chiede di abilitare Actions, premi "I understand my workflows, go ahead and enable them".
