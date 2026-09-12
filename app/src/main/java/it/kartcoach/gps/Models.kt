@@ -51,7 +51,10 @@ data class CoachMarker(
     val leadSeconds: Double = 0.45,
     val holdMillis: Long = 900L,
     val note: String = "",
-    val expectedBearingDeg: Double? = null
+    val expectedBearingDeg: Double? = null,
+    // Distanza longitudinale dal passaggio S/F appreso. Quando presente,
+    // il cue NON dipende dalla precisione laterale del GPS.
+    val lapDistanceM: Double? = null
 )
 
 data class TrackProfile(
