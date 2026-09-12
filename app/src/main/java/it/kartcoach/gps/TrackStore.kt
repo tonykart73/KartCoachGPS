@@ -41,6 +41,7 @@ class TrackStore(context: Context) {
                     put("holdMillis", marker.holdMillis)
                     put("note", marker.note)
                     marker.expectedBearingDeg?.let { put("expectedBearingDeg", it) }
+                    marker.lapDistanceM?.let { put("lapDistanceM", it) }
                 })
             }
         })
@@ -69,7 +70,8 @@ class TrackStore(context: Context) {
                         leadSeconds = m.optDouble("leadSeconds", 0.45),
                         holdMillis = m.optLong("holdMillis", 900L),
                         note = m.optString("note", ""),
-                        expectedBearingDeg = if (m.has("expectedBearingDeg")) m.optDouble("expectedBearingDeg") else null
+                        expectedBearingDeg = if (m.has("expectedBearingDeg")) m.optDouble("expectedBearingDeg") else null,
+                        lapDistanceM = if (m.has("lapDistanceM")) m.optDouble("lapDistanceM") else null
                     )
                 )
             }
