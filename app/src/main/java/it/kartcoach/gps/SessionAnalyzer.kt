@@ -1,6 +1,5 @@
 package it.kartcoach.gps
 
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -21,6 +20,8 @@ class SessionAnalyzer(private val segments: Int = 24) {
         val accelFrac: Double?,
         val peakTurnRateDegS: Double,
         val distanceStartM: Double,
+        val minSpeedDistanceM: Double,
+        val totalDistanceM: Double,
         val markerSample: TelemetrySample
     )
 
@@ -42,7 +43,7 @@ class SessionAnalyzer(private val segments: Int = 24) {
             val ideal = idealSegments[i]
             val delta = own.timeMs - ideal.timeMs
             if (delta < 35L || ideal.lap.number == bestLap.number) null
-            else buildFinding(i, own, ideal, delta)
+            else buildFinding(own, ideal, delta)
         }
 
         val findings = rawFindings
@@ -62,7 +63,8 @@ class SessionAnalyzer(private val segments: Int = 24) {
         val samples = lap.samples
         val cumulative = DoubleArray(samples.size)
         for (i in 1 until samples.size) {
-            cumulative[i] = cumulative[i - 1] + Geo.distanceMeters(samples[i - 1].point, samples[i].point.latitude, samples[i].point.longitude)
+            cumulative[i] = cumulative[i - 1] +
+                Geo.distanceMeters(samples[i - 1].point, samples[i].point.latitude, samples[i].point.longitude)
         }
         val total = cumulative.last().coerceAtLeast(1.0)
 
@@ -83,7 +85,9 @@ class SessionAnalyzer(private val segments: Int = 24) {
             val exit = speeds.last()
             val timeMs = (window.last().point.wallTimeMillis - window.first().point.wallTimeMillis).coerceAtLeast(1L)
             val dynamics = dynamics(window, cumulative, si, total)
-            val marker = window[minSpeedIndex(speeds).coerceIn(0, window.lastIndex)]
+            val minIdxLocal = minSpeedIndex(speeds).coerceIn(0, window.lastIndex)
+            val marker = window[minIdxLocal]
+            val minIdxGlobal = (si + minIdxLocal).coerceAtMost(cumulative.lastIndex)
 
             SegmentStats(
                 lap = lap,
@@ -100,6 +104,8 @@ class SessionAnalyzer(private val segments: Int = 24) {
                 accelFrac = dynamics.second,
                 peakTurnRateDegS = peakTurnRate(window),
                 distanceStartM = startDist,
+                minSpeedDistanceM = cumulative[minIdxGlobal],
+                totalDistanceM = total,
                 markerSample = marker
             )
         }
@@ -119,7 +125,10 @@ class SessionAnalyzer(private val segments: Int = 24) {
 
         for (i in window.indices) {
             val speed = window[i].point.speedMps.toDouble()
-            if (speed < minSpeed) { minSpeed = speed; minIndex = i }
+            if (speed < minSpeed) {
+                minSpeed = speed
+                minIndex = i
+            }
         }
 
         for (i in 1 until window.size) {
@@ -138,7 +147,10 @@ class SessionAnalyzer(private val segments: Int = 24) {
         for (i in 1 until window.size) {
             val dt = (window[i].point.wallTimeMillis - window[i - 1].point.wallTimeMillis) / 1000.0
             if (dt <= 0.015) continue
-            val d = Geo.angularDifferenceDeg(window[i].point.bearingDeg.toDouble(), window[i - 1].point.bearingDeg.toDouble())
+            val d = Geo.angularDifferenceDeg(
+                window[i].point.bearingDeg.toDouble(),
+                window[i - 1].point.bearingDeg.toDouble()
+            )
             peak = max(peak, d / dt)
         }
         return peak
@@ -147,11 +159,16 @@ class SessionAnalyzer(private val segments: Int = 24) {
     private fun minSpeedIndex(speeds: List<Double>): Int {
         var idx = 0
         var value = Double.MAX_VALUE
-        speeds.forEachIndexed { i, v -> if (v < value) { value = v; idx = i } }
+        speeds.forEachIndexed { i, v ->
+            if (v < value) {
+                value = v
+                idx = i
+            }
+        }
         return idx
     }
 
-    private fun buildFinding(index: Int, own: SegmentStats, ideal: SegmentStats, delta: Long): AnalysisFinding {
+    private fun buildFinding(own: SegmentStats, ideal: SegmentStats, delta: Long): AnalysisFinding {
         val entryDiff = own.entryKmh - ideal.entryKmh
         val minDiff = own.minKmh - ideal.minKmh
         val exitDiff = own.exitKmh - ideal.exitKmh
@@ -163,39 +180,50 @@ class SessionAnalyzer(private val segments: Int = 24) {
             own.accelFrac == null || ideal.accelFrac == null -> false
             else -> own.accelFrac > ideal.accelFrac + 0.006
         }
+        val rotatesTooHard = own.peakTurnRateDegS > ideal.peakTurnRateDegS * 1.15
 
         val (title, advice, cue) = when {
-            entryDiff > 2.5 && exitDiff < -3.0 -> Triple(
-                "Ingresso troppo aggressivo",
-                "Sacrifica leggermente l'ingresso: meno velocità/sterzo all'attacco e prepara prima l'uscita.",
-                CueType.TURN
-            )
             brakeEarlier && entryDiff < -2.0 -> Triple(
                 "Freni troppo presto",
-                "Porta la frenata più avanti e falla più corta. Non iniziare a togliere velocità così presto.",
+                "Porta la frenata più avanti e falla più corta.",
                 CueType.BRAKE
             )
-            minDiff < -3.0 -> Triple(
-                "Perdi troppa velocità a centro curva",
-                "Fai scorrere il kart: meno sterzo mantenuto e meno rallentamento vicino all'apice.",
-                CueType.STRAIGHTEN
-            )
-            accelLater || exitDiff < -3.0 -> Triple(
-                "Uscita lenta",
-                "Raddrizza prima il volante e anticipa la riapertura del gas senza stringere la traiettoria.",
-                CueType.STRAIGHTEN
-            )
-            own.peakTurnRateDegS > ideal.peakTurnRateDegS * 1.15 -> Triple(
-                "Rotazione troppo brusca",
-                "Inserisci più progressivo: evita il colpo di sterzo che fa perdere appoggio al posteriore.",
+            entryDiff > 2.5 && exitDiff < -3.0 -> Triple(
+                "Ingresso troppo aggressivo",
+                "Sacrifica leggermente l'ingresso e prepara prima l'uscita.",
                 CueType.TURN
+            )
+            accelLater -> Triple(
+                "Riapertura gas tardiva",
+                "Finita la rotazione, libera il volante e riapri prima.",
+                CueType.THROTTLE
+            )
+            rotatesTooHard -> Triple(
+                "Rotazione troppo brusca",
+                "Una sola rotazione progressiva: evita il colpo di sterzo.",
+                CueType.TURN
+            )
+            minDiff < -3.0 || exitDiff < -3.0 -> Triple(
+                "Volante tenuto troppo",
+                "Come nel video del professionista: dopo il picco di rotazione APRI, non aspettare la minima e usa l'uscita.",
+                CueType.STRAIGHTEN
             )
             else -> Triple(
                 "Transizione da pulire",
-                "Riduci il tempo in cui il kart resta rallentato: una sola azione pulita e poi fallo scorrere.",
+                "Riduci il tempo di transizione e torna prima in accelerazione.",
                 CueType.THROTTLE
             )
         }
+
+        // Il marker e' collocato sul momento dell'azione del giro migliore interno.
+        // CoachEngine lo anticipa poi con leadSeconds in funzione della velocita'.
+        val cueDistance = when (cue) {
+            CueType.BRAKE -> ideal.brakeFrac?.times(ideal.totalDistanceM) ?: ideal.distanceStartM
+            CueType.THROTTLE, CueType.FULL_THROTTLE ->
+                ideal.accelFrac?.times(ideal.totalDistanceM) ?: ideal.minSpeedDistanceM
+            CueType.TURN -> ideal.minSpeedDistanceM
+            CueType.STRAIGHTEN -> ideal.minSpeedDistanceM
+        }.coerceIn(0.0, ideal.totalDistanceM)
 
         val evidence = buildString {
             append("Δ +%.3f s".format(delta / 1000.0))
@@ -208,7 +236,7 @@ class SessionAnalyzer(private val segments: Int = 24) {
         return AnalysisFinding(
             rank = 0,
             deltaMs = delta,
-            distanceFromLapStartM = own.distanceStartM,
+            distanceFromLapStartM = cueDistance,
             title = title,
             advice = advice,
             cueType = cue,
