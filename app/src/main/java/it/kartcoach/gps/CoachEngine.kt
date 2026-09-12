@@ -1,10 +1,18 @@
 package it.kartcoach.gps
 
+/**
+ * Live coach v0.5.
+ *
+ * La posizione GPS dello smartphone (tipicamente +/- 3-6 m) NON viene usata per
+ * decidere la traiettoria o il punto preciso della curva. I marker appresi vengono
+ * richiamati tramite distanza longitudinale dal passaggio S/F, ottenuta integrando
+ * la velocita' GPS. Le coordinate restano solo come fallback per marker manuali e
+ * vengono usate esclusivamente con fix molto preciso.
+ */
 class CoachEngine {
     private var activeUntilMs = 0L
     private var activeMarker: CoachMarker? = null
     private val lastTriggeredAt = mutableMapOf<Long, Long>()
-    private val cornerPhaseCoach = CornerPhaseCoach()
 
     data class Result(val marker: CoachMarker?, val distanceM: Double?)
 
@@ -12,55 +20,81 @@ class CoachEngine {
         activeUntilMs = 0L
         activeMarker = null
         lastTriggeredAt.clear()
-        cornerPhaseCoach.reset()
     }
 
-    fun update(nowMs: Long, location: GpsPoint, track: TrackConfig): Result {
+    fun newLap() {
+        activeUntilMs = 0L
+        activeMarker = null
+    }
+
+    fun update(
+        nowMs: Long,
+        location: GpsPoint,
+        track: TrackConfig,
+        lapDistanceM: Double? = null
+    ): Result {
         val active = activeMarker
         if (active != null && nowMs < activeUntilMs) {
-            val distance = if (active.baseRadiusM <= 0.0) 0.0
-            else Geo.distanceMeters(location, active.latitude, active.longitude)
-            return Result(active, distance)
+            val d = active.lapDistanceM?.let { target ->
+                lapDistanceM?.let { live -> (target - live).coerceAtLeast(0.0) }
+            }
+            return Result(active, d)
         }
         activeMarker = null
 
-        val builtIn = MorconeTechnique.markersFor(track)
-        val candidates = (builtIn + track.markers)
-            .distinctBy { it.id }
-            .map { marker -> marker to Geo.distanceMeters(location, marker.latitude, marker.longitude) }
-            .sortedBy { it.second }
+        // 1) Marker appresi: trigger per distanza lungo il giro, non per lat/lon.
+        if (lapDistanceM != null) {
+            val distanceMarkers = track.markers
+                .filter { it.lapDistanceM != null }
+                .sortedBy { it.lapDistanceM }
 
-        for ((marker, distance) in candidates) {
-            val expected = marker.expectedBearingDeg
-            val bearingOk = expected == null || location.speedMps < 3f ||
-                Geo.angularDifferenceDeg(location.bearingDeg.toDouble(), expected) <= 65.0
-            if (!bearingOk) continue
+            for (marker in distanceMarkers) {
+                val target = marker.lapDistanceM ?: continue
+                val remaining = target - lapDistanceM
+                val leadM = maxOf(1.5, location.speedMps.toDouble() * marker.leadSeconds)
+                val recentlyTriggered = nowMs - (lastTriggeredAt[marker.id] ?: 0L) < 8_000L
 
-            val dynamicLeadM = location.speedMps.toDouble() * marker.leadSeconds
-            val triggerDistance = maxOf(marker.baseRadiusM, dynamicLeadM)
-            val recentlyTriggered = nowMs - (lastTriggeredAt[marker.id] ?: 0L) < 7_000L
-            if (distance <= triggerDistance && !recentlyTriggered) {
-                activate(marker, nowMs)
-                lastTriggeredAt[marker.id] = nowMs
-                return Result(marker, distance)
+                // Piccola tolleranza negativa per aggiornamenti GPS a bassa frequenza.
+                if (remaining in -1.5..leadM && !recentlyTriggered) {
+                    activate(marker, nowMs)
+                    lastTriggeredAt[marker.id] = nowMs
+                    return Result(marker, remaining.coerceAtLeast(0.0))
+                }
+            }
+
+            val next = distanceMarkers
+                .mapNotNull { m -> m.lapDistanceM?.let { it - lapDistanceM } }
+                .filter { it >= 0.0 }
+                .minOrNull()
+            if (next != null) return Result(null, next)
+        }
+
+        // 2) Fallback marker manuali a coordinate: SOLO con precisione <= 2.5 m.
+        // Con +/-4 m non vengono lanciati falsi segnali.
+        val preciseFix = location.accuracyM.isFinite() && location.accuracyM <= 2.5f
+        if (preciseFix) {
+            val coordinateMarkers = track.markers
+                .filter { it.lapDistanceM == null }
+                .map { marker -> marker to Geo.distanceMeters(location, marker.latitude, marker.longitude) }
+                .sortedBy { it.second }
+
+            for ((marker, distance) in coordinateMarkers) {
+                val expected = marker.expectedBearingDeg
+                val bearingOk = expected == null || location.speedMps < 3f ||
+                    Geo.angularDifferenceDeg(location.bearingDeg.toDouble(), expected) <= 50.0
+                if (!bearingOk) continue
+
+                val leadM = maxOf(marker.baseRadiusM, location.speedMps.toDouble() * marker.leadSeconds)
+                val recentlyTriggered = nowMs - (lastTriggeredAt[marker.id] ?: 0L) < 8_000L
+                if (distance <= leadM && !recentlyTriggered) {
+                    activate(marker, nowMs)
+                    lastTriggeredAt[marker.id] = nowMs
+                    return Result(marker, distance)
+                }
             }
         }
 
-        // Vicino ai due punti Morcone calibrati non sommare un secondo cue dinamico.
-        val nearBuiltIn = builtIn.any {
-            Geo.distanceMeters(location, it.latitude, it.longitude) <= 24.0
-        }
-        val dynamicMarker = cornerPhaseCoach.update(
-            nowMs = nowMs,
-            point = location,
-            enabled = track.profileId == "morcone" && !nearBuiltIn
-        )
-        if (dynamicMarker != null) {
-            activate(dynamicMarker, nowMs)
-            return Result(dynamicMarker, 0.0)
-        }
-
-        return Result(null, candidates.firstOrNull()?.second)
+        return Result(null, null)
     }
 
     private fun activate(marker: CoachMarker, nowMs: Long) {
