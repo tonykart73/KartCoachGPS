@@ -151,7 +151,8 @@ private fun CoachScreen(
     if (cue != null) {
         val bg = when (cue.type) {
             CueType.BRAKE -> Color(0xFFD50000)
-            CueType.TURN -> Color(0xFFFFA000)
+            CueType.WAIT -> Color(0xFFFFC400)
+            CueType.TURN -> Color(0xFFFF6D00)
             CueType.STRAIGHTEN -> Color(0xFF00C853)
             CueType.THROTTLE -> Color(0xFF00A0FF)
             CueType.FULL_THROTTLE -> Color(0xFF7C4DFF)
@@ -294,12 +295,33 @@ private fun AnalysisScreen(state: LiveCoachState, onFinish: () -> Unit, onToggle
             }
         }
 
+        if (state.entryTimingInsights.isNotEmpty()) {
+            Spacer(Modifier.height(22.dp))
+            Text("TIMING INGRESSO IMU", color = Color(0xFFFFD740), fontSize = 20.sp, fontWeight = FontWeight.Black)
+            Text("Misura il ritardo carico/decelerazione → inizio rotazione. Il riferimento nasce dai tuoi giri più veloci, non da un valore fisso.", color = Color.LightGray, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+            state.entryTimingInsights.forEach { insight ->
+                Card(Modifier.fillMaxWidth().padding(bottom = 10.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF201B0D))) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Curva ${insight.cornerIndex} · circa ${insight.distanceM.toInt()} m", color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                        Text(
+                            "Misurato ${insight.measuredDelayMs} ms · riferimento ${insight.referenceDelayMs} ms · Δ ${if (insight.deltaMs >= 0) "+" else ""}${insight.deltaMs} ms",
+                            color = if (insight.deltaMs < 0) Color(0xFFFFAB91) else Color.LightGray,
+                            fontSize = 14.sp
+                        )
+                        Spacer(Modifier.height(5.dp))
+                        Text(insight.advice, color = Color.White, fontSize = 16.sp)
+                    }
+                }
+            }
+        }
+
         Spacer(Modifier.height(22.dp))
         val analysis = state.analysis
         if (analysis == null) {
-            Text("Servono almeno 2 giri validi. Il primo run serve a imparare pista e guida; poi il confronto diventa automatico.", color = Color.Gray, fontSize = 17.sp)
+            Text("Servono almeno 2 giri validi. I primi giri servono a imparare pista e guida; poi il confronto diventa automatico.", color = Color.Gray, fontSize = 17.sp)
         } else if (analysis.findings.isEmpty()) {
-            Text("I migliori settori sono già molto coerenti. Per andare oltre serve un riferimento esterno più veloce (AiM/XRK o giro di un altro pilota).", color = Color.LightGray, fontSize = 17.sp)
+            Text("I migliori settori sono già molto coerenti. Continua a controllare il timing IMU degli ingressi.", color = Color.LightGray, fontSize = 17.sp)
         } else {
             Text("DOVE STAI LASCIANDO TEMPO", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
             Spacer(Modifier.height(10.dp))
@@ -347,6 +369,7 @@ private fun SetupScreen(
         Spacer(Modifier.height(12.dp))
         Text("GPS: ${state.location?.let { "%.6f, %.6f".format(Locale.US, it.latitude, it.longitude) } ?: "attesa"}", color = Color.LightGray)
         Text("Precisione: ${state.location?.accuracyM?.let { if (it.isFinite()) "%.1f m".format(Locale.US, it) else "--" } ?: "--"}", color = Color.LightGray)
+        Text("IMU: a=${"%.2f".format(Locale.US, state.sensors.linearAccelMps2)} m/s² · ω=${"%.2f".format(Locale.US, state.sensors.gyroMagnitudeRadS)} rad/s", color = Color.LightGray)
         Text("Linea appresa: ${if (state.track.startFinish != null) "SÌ" else "NO"}", color = Color.LightGray)
         Text("Marker coach: ${state.track.markers.size}", color = Color.LightGray)
 
@@ -354,7 +377,7 @@ private fun SetupScreen(
         Text("Marker manuali (opzionale):", color = Color.White, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CueType.entries.forEach { type ->
+            CueType.entries.filter { it != CueType.WAIT }.forEach { type ->
                 OutlinedButton(onClick = { onAdd(type) }, enabled = state.location != null) { Text(type.label) }
             }
         }
@@ -409,9 +432,8 @@ private fun modeColor(mode: LearningMode): Color = when (mode) {
 private fun gpsText(state: LiveCoachState): String {
     val p = state.location ?: return "GPS: attesa fix"
     val acc = if (p.accuracyM.isFinite()) " ±%.1fm".format(Locale.US, p.accuracyM) else ""
-    return "GPS OK$acc"
+    return "GPS OK$acc · IMU attiva"
 }
-
 
 private fun formatSignedDelta(ms: Long): String {
     val sign = if (ms > 0) "+" else if (ms < 0) "−" else "±"
