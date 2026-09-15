@@ -15,6 +15,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
     private val recorder = SessionRecorder(application)
     private val engine = CoachEngine()
     private val analyzer = SessionAnalyzer()
+    private val entryTimingCoach = EntryTimingCoach()
 
     private val _state = MutableStateFlow(LiveCoachState(track = store.load()))
     val state: StateFlow<LiveCoachState> = _state.asStateFlow()
@@ -32,10 +33,11 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
     private var stationarySinceMs: Long? = null
     private val rejectedProfiles = mutableSetOf<String>()
 
-    // v0.5: posizione longitudinale nel giro ricavata integrando la velocita'.
+    // Posizione longitudinale nel giro ricavata integrando la velocita'.
     // Evita di usare il +/- metri della posizione GPS per lanciare i cue.
     private var lapDistanceM = 0.0
     private var previousDistancePoint: GpsPoint? = null
+    private var latestSpeedAccelMps2 = 0.0
 
     fun startSensorsAndGps() {
         if (locationTracker != null) return
@@ -62,9 +64,27 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun onSensors(snapshot: SensorSnapshot) {
-        // I sensori restano registrati per l'analisi. Il live coach v0.5 non usa piu'
-        // l'heading GPS rumoroso per inventare un punto di apertura volante.
         _state.value = _state.value.copy(sensors = snapshot)
+
+        if (!_state.value.recording || lapStartedAt == null) return
+        val location = _state.value.location ?: return
+        val now = if (snapshot.wallTimeMillis > 0L) snapshot.wallTimeMillis else System.currentTimeMillis()
+        val distanceEstimate = estimatedLapDistance(now, location)
+        val cue = entryTimingCoach.onSensor(
+            snapshot = snapshot,
+            speedMps = location.speedMps.toDouble(),
+            lapDistanceM = distanceEstimate,
+            speedAccelMps2 = latestSpeedAccelMps2,
+            nowMs = now
+        ) ?: entryTimingCoach.currentCue(now)
+
+        if (cue != null) {
+            // Il coach d'ingresso ha priorita': e' sincronizzato con l'evento reale
+            // di carico/rotazione, non con una coordinata GPS.
+            _state.value = _state.value.copy(activeCue = cue, distanceToCueM = null)
+        } else if ((_state.value.activeCue?.id ?: 0L) < -9_000_000L) {
+            _state.value = _state.value.copy(activeCue = null, distanceToCueM = null)
+        }
     }
 
     private fun onLocation(point: GpsPoint) {
@@ -95,15 +115,22 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             if (sf == null) learnStartFinish(point) else updateLap(sample)
             detectReturnToPits(point)
 
+            val now = System.currentTimeMillis()
+            val entryCue = entryTimingCoach.currentCue(now)
             val coached = engine.update(
-                nowMs = System.currentTimeMillis(),
+                nowMs = now,
                 location = point,
                 track = _state.value.track,
                 lapDistanceM = if (lapStartedAt != null) lapDistanceM else null
             )
-            _state.value = _state.value.copy(activeCue = coached.marker, distanceToCueM = coached.distanceM)
+            val chosen = entryCue ?: coached.marker
+            _state.value = _state.value.copy(
+                activeCue = chosen,
+                distanceToCueM = if (entryCue != null) null else coached.distanceM
+            )
         } else {
             previousDistancePoint = point
+            latestSpeedAccelMps2 = 0.0
             _state.value = _state.value.copy(activeCue = null, distanceToCueM = null)
         }
     }
@@ -111,12 +138,20 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
     private fun updateLapDistance(point: GpsPoint) {
         val prev = previousDistancePoint
         previousDistancePoint = point
-        if (lapStartedAt == null || prev == null) return
+        if (prev == null) return
 
         val dt = (point.wallTimeMillis - prev.wallTimeMillis) / 1000.0
         if (dt !in 0.02..2.0) return
+        latestSpeedAccelMps2 = ((point.speedMps - prev.speedMps) / dt).toDouble().coerceIn(-15.0, 15.0)
+        if (lapStartedAt == null) return
+
         val avgSpeed = (prev.speedMps.toDouble() + point.speedMps.toDouble()) / 2.0
         if (avgSpeed in 0.0..70.0) lapDistanceM += avgSpeed * dt
+    }
+
+    private fun estimatedLapDistance(nowMs: Long, location: GpsPoint): Double {
+        val ageS = ((nowMs - location.wallTimeMillis).coerceAtLeast(0L) / 1000.0).coerceAtMost(0.65)
+        return lapDistanceM + location.speedMps.toDouble().coerceAtLeast(0.0) * ageS
     }
 
     private fun resolveTrack(point: GpsPoint) {
@@ -175,7 +210,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             learningMode = if (track.startFinish == null) LearningMode.LEARNING_TRACK else LearningMode.LEARNING_DRIVER,
             statusMessage = if (track.startFinish == null)
                 "Pista confermata. Parti: imparo automaticamente il giro e la linea virtuale."
-            else "Pista riconosciuta. GPS usato per giro/velocita'; i cue appresi non dipendono dalla precisione laterale."
+            else "Pista riconosciuta. GPS per giro/velocita'; IMU per carico e rotazione."
         )
     }
 
@@ -191,9 +226,11 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
         stationarySinceMs = null
         lapDistanceM = 0.0
         previousDistancePoint = null
+        latestSpeedAccelMps2 = 0.0
         sessionStartedAtMs = System.currentTimeMillis()
         recorder.start(profile.name, _state.value.targetLapMillis)
         engine.reset()
+        entryTimingCoach.resetSession()
         _state.value = _state.value.copy(
             recording = true,
             lapCount = 0,
@@ -204,11 +241,12 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             bestTargetDeltaMs = null,
             sessionLapTimes = emptyList(),
             analysis = null,
+            entryTimingInsights = emptyList(),
             lastSavedFile = null,
             learningMode = if (_state.value.track.startFinish == null) LearningMode.LEARNING_TRACK else LearningMode.LEARNING_DRIVER,
             statusMessage = if (_state.value.track.startFinish == null)
                 "APPRENDIMENTO PISTA: guida normalmente, riconosco il primo giro chiuso."
-            else "APPRENDIMENTO: completa 2 giri validi; poi attivo i cue nei punti realmente persi."
+            else "IMU IN APPRENDIMENTO: 2 giri senza disturbi, poi confronto carico → rotazione."
         )
     }
 
@@ -224,11 +262,12 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
         lapDistanceM = 0.0
         previousDistancePoint = point
         engine.newLap()
+        entryTimingCoach.newLap()
         _state.value = _state.value.copy(
             track = track,
             currentLapMillis = 0L,
             learningMode = LearningMode.LEARNING_DRIVER,
-            statusMessage = "GIRO RICONOSCIUTO: completa 2 giri validi per il coach automatico."
+            statusMessage = "GIRO RICONOSCIUTO: completa 2 giri validi per imparare il timing d'ingresso."
         )
     }
 
@@ -266,6 +305,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             lapDistanceM = 0.0
             previousDistancePoint = point
             engine.newLap()
+            entryTimingCoach.newLap()
         } else if (lapStartedAt == null && point.speedMps > 5f) {
             _state.value = _state.value.copy(statusMessage = "In attesa del passaggio sulla linea virtuale…")
         }
@@ -278,13 +318,14 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
         val lastDelta = target?.let { lap.durationMs - it }
         val bestDelta = if (target != null && best != null) best - target else null
         val analysis = analyzer.analyze(completedLaps)
+        val entryInsights = entryTimingCoach.completeLap(lap.number, lap.durationMs)
 
         var track = _state.value.track
         var mode = LearningMode.LEARNING_DRIVER
         var message = buildString {
             append("Giro ${lap.number}: ${formatMillis(lap.durationMs)}")
             if (lastDelta != null) append(" · target ${formatSignedMillis(lastDelta)}")
-            if (analysis == null) append(" · sto ancora imparando")
+            if (!entryTimingCoach.hasReference()) append(" · IMU sta imparando")
         }
 
         if (analysis != null) {
@@ -297,6 +338,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
                     baseRadiusM = 2.0,
                     leadSeconds = when (f.cueType) {
                         CueType.BRAKE -> 0.18
+                        CueType.WAIT -> 0.05
                         CueType.TURN -> 0.12
                         CueType.STRAIGHTEN -> 0.22
                         CueType.THROTTLE -> 0.10
@@ -312,9 +354,13 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             store.save(track)
             mode = LearningMode.COACH_READY
             val targetTail = bestDelta?.let { " · BEST vs TARGET ${formatSignedMillis(it)}" } ?: ""
-            message = if (analysis.findings.isEmpty())
-                "Coach pronto: giri molto coerenti. Nessun falso cue GPS.$targetTail"
-            else "COACH ATTIVO: ${analysis.findings.size} cue appresi lungo il giro.$targetTail"
+            message = when {
+                entryInsights.any { it.deltaMs < -80L } ->
+                    "INGRESSO: rilevata sterzata anticipata. Nel prossimo giro usa ASPETTA → INSERISCI.$targetTail"
+                analysis.findings.isEmpty() ->
+                    "Coach pronto: giri coerenti. IMU attiva sul timing d'ingresso.$targetTail"
+                else -> "COACH ATTIVO: ${analysis.findings.size} punti + timing IMU carico→rotazione.$targetTail"
+            }
         }
 
         _state.value = _state.value.copy(
@@ -327,6 +373,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             currentLapMillis = 0L,
             sessionLapTimes = times,
             analysis = analysis,
+            entryTimingInsights = entryInsights,
             learningMode = mode,
             statusMessage = message
         )
@@ -388,7 +435,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             targetLapMillis = target,
             lastLapTargetDeltaMs = null,
             bestTargetDeltaMs = null,
-            statusMessage = "TARGET impostato: ${formatMillis(target)}. Quando parti, la registrazione si avvia automaticamente."
+            statusMessage = "TARGET impostato: ${formatMillis(target)}. Quando parti, la registrazione si avvierà automaticamente."
         )
         return true
     }
@@ -412,14 +459,17 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
         outsideStartZone = false
         lapDistanceM = 0.0
         previousDistancePoint = loc
+        latestSpeedAccelMps2 = 0.0
         engine.reset()
+        entryTimingCoach.resetSession()
         _state.value = _state.value.copy(
             track = track,
             lapCount = 0,
             lastLapMillis = null,
             bestLapMillis = null,
+            entryTimingInsights = emptyList(),
             learningMode = LearningMode.LEARNING_DRIVER,
-            statusMessage = "Linea start/finish calibrata manualmente. Completa 2 giri per il coach."
+            statusMessage = "Linea start/finish calibrata manualmente. Completa 2 giri per il coach IMU."
         )
     }
 
@@ -433,6 +483,7 @@ class KartCoachViewModel(application: Application) : AndroidViewModel(applicatio
             baseRadiusM = 4.0,
             leadSeconds = when (type) {
                 CueType.BRAKE -> 0.18
+                CueType.WAIT -> 0.05
                 CueType.TURN -> 0.12
                 CueType.STRAIGHTEN -> 0.22
                 CueType.THROTTLE -> 0.10
