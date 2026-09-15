@@ -20,7 +20,7 @@ class SessionRecorder(private val context: Context) {
         startedAt = System.currentTimeMillis()
         this.trackName = trackName
         this.targetLapMs = targetLapMs
-        rows += "time_ms,session_ms,lap,target_lap_ms,lat,lon,speed_kmh,bearing_deg,accuracy_m,ax,ay,az,gx,gy,gz"
+        rows += "time_ms,session_ms,lap,target_lap_ms,lat,lon,speed_kmh,bearing_deg,accuracy_m,ax,ay,az,gx,gy,gz,linear_accel_mps2,gyro_mag_rads,sensor_time_ms"
     }
 
     fun add(point: GpsPoint, sensors: SensorSnapshot, lapNumber: Int) {
@@ -36,7 +36,10 @@ class SessionRecorder(private val context: Context) {
             point.bearingDeg,
             point.accuracyM,
             sensors.ax, sensors.ay, sensors.az,
-            sensors.gx, sensors.gy, sensors.gz
+            sensors.gx, sensors.gy, sensors.gz,
+            sensors.linearAccelMps2,
+            sensors.gyroMagnitudeRadS,
+            sensors.wallTimeMillis
         ).joinToString(",")
     }
 
