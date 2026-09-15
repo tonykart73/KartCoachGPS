@@ -39,8 +39,8 @@ class SessionAnalyzer(private val segments: Int = 24) {
         val idealMs = idealSegments.sumOf { it.timeMs }
         val bestSegments = byLap.getValue(bestLap)
 
-        val rawFindings = bestSegments.mapIndexedNotNull { i, own ->
-            val ideal = idealSegments[i]
+        val rawFindings = bestSegments.mapIndexedNotNull { _, own ->
+            val ideal = idealSegments[own.index]
             val delta = own.timeMs - ideal.timeMs
             if (delta < 35L || ideal.lap.number == bestLap.number) null
             else buildFinding(own, ideal, delta)
@@ -215,10 +215,9 @@ class SessionAnalyzer(private val segments: Int = 24) {
             )
         }
 
-        // Il marker e' collocato sul momento dell'azione del giro migliore interno.
-        // CoachEngine lo anticipa poi con leadSeconds in funzione della velocita'.
         val cueDistance = when (cue) {
             CueType.BRAKE -> ideal.brakeFrac?.times(ideal.totalDistanceM) ?: ideal.distanceStartM
+            CueType.WAIT -> ideal.brakeFrac?.times(ideal.totalDistanceM) ?: ideal.distanceStartM
             CueType.THROTTLE, CueType.FULL_THROTTLE ->
                 ideal.accelFrac?.times(ideal.totalDistanceM) ?: ideal.minSpeedDistanceM
             CueType.TURN -> ideal.minSpeedDistanceM
