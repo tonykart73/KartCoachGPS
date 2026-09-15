@@ -16,7 +16,11 @@ data class SensorSnapshot(
     val az: Float = 0f,
     val gx: Float = 0f,
     val gy: Float = 0f,
-    val gz: Float = 0f
+    val gz: Float = 0f,
+    // Grandezze indipendenti dall'orientamento del telefono.
+    val linearAccelMps2: Float = 0f,
+    val gyroMagnitudeRadS: Float = 0f,
+    val wallTimeMillis: Long = 0L
 )
 
 data class TelemetrySample(
@@ -36,6 +40,7 @@ data class LapData(
 
 enum class CueType(val label: String) {
     BRAKE("FRENA"),
+    WAIT("ASPETTA"),
     TURN("INSERISCI"),
     STRAIGHTEN("APRI"),
     THROTTLE("GAS"),
@@ -94,6 +99,16 @@ data class SessionAnalysis(
     val findings: List<AnalysisFinding>
 )
 
+data class EntryTimingInsight(
+    val cornerIndex: Int,
+    val distanceM: Double,
+    val measuredDelayMs: Long,
+    val referenceDelayMs: Long,
+    // Negativo = ha iniziato a ruotare prima del riferimento.
+    val deltaMs: Long,
+    val advice: String
+)
+
 enum class LearningMode {
     WAITING_FOR_TRACK,
     LEARNING_TRACK,
@@ -121,6 +136,7 @@ data class LiveCoachState(
     val pendingTrackConfirmation: TrackProfile? = null,
     val learningMode: LearningMode = LearningMode.WAITING_FOR_TRACK,
     val analysis: SessionAnalysis? = null,
+    val entryTimingInsights: List<EntryTimingInsight> = emptyList(),
     val sessionLapTimes: List<Long> = emptyList(),
     val statusMessage: String = "In attesa del GPS",
     val lastSavedFile: String? = null
